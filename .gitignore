@@ -1,0 +1,19 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Output (generated articles)
+output/
+
+# Logs
+app.log
+
+# Pytest cache
+.pytest_cache/
