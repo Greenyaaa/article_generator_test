@@ -148,3 +148,85 @@ def test_extract_bullets_empty_section():
 
 def test_extract_bullets_no_section():
     assert _extract_bullets("Topic: no bullets here\n") == []
+
+
+# ---------------------------------------------------------------------------
+# Special characters
+# ---------------------------------------------------------------------------
+
+def test_topic_with_special_characters(tmp_path):
+    """Topic with punctuation, quotes, slashes — should parse without error."""
+    f = write_input(tmp_path, """\
+Topic: Why "automation" costs < $1000/month & saves time!
+Bullets:
+- first point
+""")
+    result = parse_input_file(f)
+    assert result.topic == 'Why "automation" costs < $1000/month & saves time!'
+
+
+def test_topic_with_unicode(tmp_path):
+    """Non-latin scripts in topic — Chinese, Arabic, Cyrillic."""
+    f = write_input(tmp_path, """\
+Topic: 自动化如何帮助企业 / Как автоматизация помогает / كيف تساعد الأتمتة
+Bullets:
+- reduces manual work
+""")
+    result = parse_input_file(f)
+    assert "自动化" in result.topic
+    assert "автоматизация" in result.topic
+
+
+def test_bullets_with_special_characters(tmp_path):
+    """Bullets containing colons, dashes, symbols — should not confuse the parser."""
+    f = write_input(tmp_path, """\
+Topic: Test
+Bullets:
+- cost: $500/month
+- rate is 99.9% uptime
+- supports C++, Python & Go
+- item — with em-dash
+""")
+    result = parse_input_file(f)
+    assert len(result.bullets) == 4
+    assert "cost: $500/month" in result.bullets
+    assert "rate is 99.9% uptime" in result.bullets
+    assert "supports C++, Python & Go" in result.bullets
+    assert "item — with em-dash" in result.bullets
+
+
+def test_bullets_with_unicode(tmp_path):
+    """Bullets in non-latin scripts — should parse correctly."""
+    f = write_input(tmp_path, """\
+Topic: Some topic
+Language: Russian
+Bullets:
+- ручной труд ограничивает рост
+- найм увеличивает расходы
+- автоматизация улучшает масштабируемость
+""")
+    result = parse_input_file(f)
+    assert len(result.bullets) == 3
+    assert "ручной труд ограничивает рост" in result.bullets
+
+
+def test_topic_with_colon_inside(tmp_path):
+    """Topic containing a colon should not be truncated at the colon."""
+    f = write_input(tmp_path, """\
+Topic: Automation: why it matters in 2025
+Bullets:
+- saves time
+""")
+    result = parse_input_file(f)
+    assert result.topic == "Automation: why it matters in 2025"
+
+
+def test_extra_whitespace_in_topic(tmp_path):
+    """Leading/trailing whitespace in topic should be stripped."""
+    f = write_input(tmp_path, """\
+Topic:    lots of spaces around
+Bullets:
+- point
+""")
+    result = parse_input_file(f)
+    assert result.topic == "lots of spaces around"
