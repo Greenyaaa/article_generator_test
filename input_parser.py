@@ -38,7 +38,10 @@ def parse_input_file(file_path: str | Path) -> ArticleInput:
     """
     path = Path(file_path)
     if not path.exists():
-        raise FileNotFoundError(f"Input file not found: {file_path}")
+        raise FileNotFoundError(
+            f"Could not find input file: '{file_path}'. "
+            "Please check the path and try again."
+        )
 
     logger.info(f"Parsing input file: {path}")
     text = path.read_text(encoding="utf-8")
@@ -48,9 +51,15 @@ def parse_input_file(file_path: str | Path) -> ArticleInput:
     bullets = _extract_bullets(text)
 
     if not topic:
-        raise ValueError("Missing required field: 'Topic'")
+        raise ValueError(
+            "Your input file is missing a topic. "
+            "Please add a line like: Topic: Why automation matters"
+        )
     if not bullets:
-        raise ValueError("Missing required field: 'Bullets' (at least one bullet point)")
+        raise ValueError(
+            "Your input file has no bullet points. "
+            "Please add at least one line like: - your key point"
+        )
 
     article_input = ArticleInput(topic=topic, bullets=bullets, language=language)
     logger.info(

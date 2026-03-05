@@ -73,7 +73,7 @@ Bullets:
 # ---------------------------------------------------------------------------
 
 def test_missing_file_raises():
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError, match="Could not find input file"):
         parse_input_file("/non/existent/file.txt")
 
 
@@ -82,7 +82,7 @@ def test_missing_topic_raises(tmp_path):
 Bullets:
 - only a bullet
 """)
-    with pytest.raises(ValueError, match="Topic"):
+    with pytest.raises(ValueError, match="missing a topic"):
         parse_input_file(f)
 
 
@@ -90,7 +90,7 @@ def test_missing_bullets_raises(tmp_path):
     f = write_input(tmp_path, """\
 Topic: A topic with no bullets
 """)
-    with pytest.raises(ValueError, match="Bullets"):
+    with pytest.raises(ValueError, match="no bullet points"):
         parse_input_file(f)
 
 
@@ -99,7 +99,7 @@ def test_empty_bullets_section_raises(tmp_path):
 Topic: A topic
 Bullets:
 """)
-    with pytest.raises(ValueError, match="Bullets"):
+    with pytest.raises(ValueError, match="no bullet points"):
         parse_input_file(f)
 
 
