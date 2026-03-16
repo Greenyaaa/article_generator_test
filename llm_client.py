@@ -1,99 +1,48 @@
 """
-Anthropic API client with retry logic and error handling.
+LLM client factory. Returns the correct provider based on model name prefix.
+
+Supported providers:
+  claude-*           -> AnthropicClient
+  gpt-*, o1-*, o3-*  -> OpenAIClient
 """
 
-import logging
-import os
-import time
 from typing import Optional
 
-import anthropic
-from anthropic import APIConnectionError, APIStatusError, RateLimitError
-
-logger = logging.getLogger(__name__)
+from providers.anthropic_client import AnthropicClient
+from providers.openai_client import OpenAIClient
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_MAX_TOKENS = 4096
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2.0  # seconds
+
+_OPENAI_PREFIXES = ("gpt-", "o1-", "o3-")
 
 
-class LLMClient:
+def LLMClient(
+    model: str = DEFAULT_MODEL,
+    api_key: Optional[str] = None,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+):
     """
-    Wrapper around the Anthropic API with retry logic and logging.
+    Factory function. Returns the appropriate provider for the given model name.
+
+    Args:
+        model: Model name (e.g. 'claude-sonnet-4-5', 'gpt-4o').
+        api_key: Optional API key. If not provided, read from environment variable.
+        max_tokens: Maximum tokens for the response.
+
+    Returns:
+        A provider instance implementing BaseProvider.
+
+    Raises:
+        ValueError: If the model prefix is not recognised.
     """
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-    ):
-        self.model = model
-        self.max_tokens = max_tokens
-        self.client = anthropic.Anthropic(
-            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY")
-        )
-        logger.info(f"LLMClient initialized with model='{self.model}'")
-
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """
-        Send a prompt to the LLM and return the text response.
-
-        Retries up to MAX_RETRIES times on transient errors.
-
-        Args:
-            system_prompt: The system instruction for the model.
-            user_prompt: The user message / content to process.
-
-        Returns:
-            The model's text response.
-
-        Raises:
-            RuntimeError: If all retries are exhausted.
-        """
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                logger.debug(
-                    f"LLM request attempt {attempt}/{MAX_RETRIES} "
-                    f"(model={self.model}, max_tokens={self.max_tokens})"
-                )
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
-                result = response.content[0].text
-                logger.debug(
-                    f"LLM response received: {len(result.split())} words, "
-                    f"input_tokens={response.usage.input_tokens}, "
-                    f"output_tokens={response.usage.output_tokens}"
-                )
-                return result
-
-            except RateLimitError as e:
-                wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                logger.warning(f"Rate limit hit. Waiting {wait}s before retry... ({e})")
-                time.sleep(wait)
-
-            except APIConnectionError as e:
-                wait = RETRY_BASE_DELAY * attempt
-                logger.warning(f"Connection error. Waiting {wait}s before retry... ({e})")
-                time.sleep(wait)
-
-            except APIStatusError as e:
-                # 5xx errors are retryable; 4xx (except 429) are not
-                if e.status_code >= 500:
-                    wait = RETRY_BASE_DELAY * attempt
-                    logger.warning(
-                        f"Server error {e.status_code}. Waiting {wait}s before retry..."
-                    )
-                    time.sleep(wait)
-                else:
-                    logger.error(f"Non-retryable API error {e.status_code}: {e.message}")
-                    raise
-
-        raise RuntimeError(
-            f"LLM request failed after {MAX_RETRIES} attempts. Check logs for details."
+    if model.startswith("claude-"):
+        return AnthropicClient(model=model, api_key=api_key, max_tokens=max_tokens)
+    elif model.startswith(_OPENAI_PREFIXES):
+        return OpenAIClient(model=model, api_key=api_key, max_tokens=max_tokens)
+    else:
+        raise ValueError(
+            f"Unknown model '{model}'. "
+            f"Supported prefixes: 'claude-' (Anthropic), "
+            f"'gpt-'/'o1-'/'o3-' (OpenAI)."
         )
