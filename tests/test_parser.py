@@ -1,19 +1,27 @@
 """
-Tests for input_parser.py
+Tests for input_parser.py — LLM call is mocked, no API key required.
 """
 
+import json
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from input_parser import parse_input_file, ArticleInput, _extract_field, _extract_bullets
+from input_parser import parse_input_file, ArticleInput, _parse_llm_response
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def make_client(response: str) -> MagicMock:
+    client = MagicMock()
+    client.complete.return_value = response
+    return client
+
 
 def write_input(tmp_path: Path, content: str) -> Path:
     p = tmp_path / "input.txt"
@@ -21,51 +29,61 @@ def write_input(tmp_path: Path, content: str) -> Path:
     return p
 
 
+def valid_json_response(topic="Test topic", language="English", bullets=None):
+    return json.dumps({
+        "topic": topic,
+        "language": language,
+        "bullets": bullets or ["point one", "point two"],
+    })
+
+
 # ---------------------------------------------------------------------------
 # parse_input_file — happy path
 # ---------------------------------------------------------------------------
 
-def test_parse_full_input(tmp_path):
-    f = write_input(tmp_path, """\
-Topic: Why small businesses should automate
-Language: English
-Bullets:
-- manual work limits growth
-- hiring increases costs
-- automation improves scalability
-""")
-    result = parse_input_file(f)
+def test_parse_returns_article_input(tmp_path):
+    f = write_input(tmp_path, "Write about automation.")
+    client = make_client(valid_json_response())
+    result = parse_input_file(f, client)
     assert isinstance(result, ArticleInput)
-    assert result.topic == "Why small businesses should automate"
+    assert result.topic == "Test topic"
     assert result.language == "English"
-    assert result.bullets == [
-        "manual work limits growth",
-        "hiring increases costs",
-        "automation improves scalability",
-    ]
+    assert result.bullets == ["point one", "point two"]
 
 
-def test_parse_language_defaults_to_english(tmp_path):
-    f = write_input(tmp_path, """\
-Topic: Some topic
-Bullets:
-- point one
-""")
-    result = parse_input_file(f)
-    assert result.language == "English"
+def test_parse_passes_file_content_to_llm(tmp_path):
+    f = write_input(tmp_path, "My article idea text.")
+    client = make_client(valid_json_response())
+    parse_input_file(f, client)
+    call_kwargs = client.complete.call_args
+    assert "My article idea text." in call_kwargs.kwargs["user_prompt"]
+
+
+def test_parse_uses_system_prompt_from_file(tmp_path):
+    f = write_input(tmp_path, "Some input.")
+    client = make_client(valid_json_response())
+    parse_input_file(f, client)
+    call_kwargs = client.complete.call_args
+    assert len(call_kwargs.kwargs["system_prompt"]) > 0
 
 
 def test_parse_custom_language(tmp_path):
-    f = write_input(tmp_path, """\
-Topic: Тема статьи
-Language: Russian
-Bullets:
-- первый тезис
-- второй тезис
-""")
-    result = parse_input_file(f)
+    f = write_input(tmp_path, "Write in Russian about something.")
+    client = make_client(valid_json_response(language="Russian"))
+    result = parse_input_file(f, client)
     assert result.language == "Russian"
-    assert len(result.bullets) == 2
+
+
+def test_parse_free_form_text(tmp_path):
+    """Parser should handle completely free-form text, not just structured input."""
+    f = write_input(tmp_path, "I need an article about climate change. Cover sea levels, wildfires, and policy.")
+    client = make_client(valid_json_response(
+        topic="Climate change",
+        bullets=["sea levels", "wildfires", "policy"],
+    ))
+    result = parse_input_file(f, client)
+    assert result.topic == "Climate change"
+    assert len(result.bullets) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -73,160 +91,86 @@ Bullets:
 # ---------------------------------------------------------------------------
 
 def test_missing_file_raises():
+    client = make_client("")
     with pytest.raises(FileNotFoundError, match="Could not find input file"):
-        parse_input_file("/non/existent/file.txt")
+        parse_input_file("/non/existent/file.txt", client)
 
 
-def test_missing_topic_raises(tmp_path):
-    f = write_input(tmp_path, """\
-Bullets:
-- only a bullet
-""")
-    with pytest.raises(ValueError, match="missing a topic"):
-        parse_input_file(f)
-
-
-def test_missing_bullets_raises(tmp_path):
-    f = write_input(tmp_path, """\
-Topic: A topic with no bullets
-""")
-    with pytest.raises(ValueError, match="no bullet points"):
-        parse_input_file(f)
-
-
-def test_empty_bullets_section_raises(tmp_path):
-    f = write_input(tmp_path, """\
-Topic: A topic
-Bullets:
-""")
-    with pytest.raises(ValueError, match="no bullet points"):
-        parse_input_file(f)
+def test_missing_file_does_not_call_llm():
+    client = make_client("")
+    try:
+        parse_input_file("/non/existent/file.txt", client)
+    except FileNotFoundError:
+        pass
+    client.complete.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# _extract_field
+# _parse_llm_response — happy path
 # ---------------------------------------------------------------------------
 
-def test_extract_field_found():
-    assert _extract_field("Topic: Hello world\n", "topic") == "Hello world"
+def test_parse_llm_response_basic():
+    raw = valid_json_response(topic="AI trends", bullets=["fast", "powerful"])
+    result = _parse_llm_response(raw)
+    assert result.topic == "AI trends"
+    assert result.bullets == ["fast", "powerful"]
+    assert result.language == "English"
 
 
-def test_extract_field_case_insensitive():
-    assert _extract_field("TOPIC: Hello\n", "topic") == "Hello"
+def test_parse_llm_response_strips_markdown_fences():
+    raw = "```json\n" + valid_json_response() + "\n```"
+    result = _parse_llm_response(raw)
+    assert result.topic == "Test topic"
 
 
-def test_extract_field_missing_returns_default():
-    assert _extract_field("Bullets:\n- x\n", "topic", default="fallback") == "fallback"
+def test_parse_llm_response_strips_plain_fences():
+    raw = "```\n" + valid_json_response() + "\n```"
+    result = _parse_llm_response(raw)
+    assert result.topic == "Test topic"
 
 
-def test_extract_field_missing_returns_none():
-    assert _extract_field("Bullets:\n- x\n", "topic") is None
+def test_parse_llm_response_defaults_language_to_english():
+    raw = json.dumps({"topic": "Something", "bullets": ["x"]})
+    result = _parse_llm_response(raw)
+    assert result.language == "English"
 
 
-# ---------------------------------------------------------------------------
-# _extract_bullets
-# ---------------------------------------------------------------------------
-
-def test_extract_bullets_basic():
-    text = "Bullets:\n- first\n- second\n- third\n"
-    assert _extract_bullets(text) == ["first", "second", "third"]
+def test_parse_llm_response_unicode_topic():
+    raw = valid_json_response(topic="Почему автоматизация важна", language="Russian")
+    result = _parse_llm_response(raw)
+    assert result.topic == "Почему автоматизация важна"
+    assert result.language == "Russian"
 
 
-def test_extract_bullets_strips_whitespace():
-    text = "Bullets:\n-   spaced bullet   \n"
-    assert _extract_bullets(text) == ["spaced bullet"]
-
-
-def test_extract_bullets_stops_at_non_bullet_line():
-    text = "Bullets:\n- point one\nTopic: stops here\n- should not be included\n"
-    assert _extract_bullets(text) == ["point one"]
-
-
-def test_extract_bullets_empty_section():
-    assert _extract_bullets("Bullets:\n") == []
-
-
-def test_extract_bullets_no_section():
-    assert _extract_bullets("Topic: no bullets here\n") == []
-
-
-# ---------------------------------------------------------------------------
-# Special characters
-# ---------------------------------------------------------------------------
-
-def test_topic_with_special_characters(tmp_path):
-    """Topic with punctuation, quotes, slashes — should parse without error."""
-    f = write_input(tmp_path, """\
-Topic: Why "automation" costs < $1000/month & saves time!
-Bullets:
-- first point
-""")
-    result = parse_input_file(f)
-    assert result.topic == 'Why "automation" costs < $1000/month & saves time!'
-
-
-def test_topic_with_unicode(tmp_path):
-    """Non-latin scripts in topic — Chinese, Arabic, Cyrillic."""
-    f = write_input(tmp_path, """\
-Topic: 自动化如何帮助企业 / Как автоматизация помогает / كيف تساعد الأتمتة
-Bullets:
-- reduces manual work
-""")
-    result = parse_input_file(f)
-    assert "自动化" in result.topic
-    assert "автоматизация" in result.topic
-
-
-def test_bullets_with_special_characters(tmp_path):
-    """Bullets containing colons, dashes, symbols — should not confuse the parser."""
-    f = write_input(tmp_path, """\
-Topic: Test
-Bullets:
-- cost: $500/month
-- rate is 99.9% uptime
-- supports C++, Python & Go
-- item — with em-dash
-""")
-    result = parse_input_file(f)
-    assert len(result.bullets) == 4
+def test_parse_llm_response_special_chars_in_bullets():
+    raw = valid_json_response(bullets=["cost: $500/month", "supports C++, Python & Go"])
+    result = _parse_llm_response(raw)
     assert "cost: $500/month" in result.bullets
-    assert "rate is 99.9% uptime" in result.bullets
     assert "supports C++, Python & Go" in result.bullets
-    assert "item — with em-dash" in result.bullets
 
 
-def test_bullets_with_unicode(tmp_path):
-    """Bullets in non-latin scripts — should parse correctly."""
-    f = write_input(tmp_path, """\
-Topic: Some topic
-Language: Russian
-Bullets:
-- ручной труд ограничивает рост
-- найм увеличивает расходы
-- автоматизация улучшает масштабируемость
-""")
-    result = parse_input_file(f)
-    assert len(result.bullets) == 3
-    assert "ручной труд ограничивает рост" in result.bullets
+# ---------------------------------------------------------------------------
+# _parse_llm_response — error cases
+# ---------------------------------------------------------------------------
+
+def test_parse_llm_response_invalid_json_raises():
+    with pytest.raises(ValueError, match="invalid JSON"):
+        _parse_llm_response("this is not json at all")
 
 
-def test_topic_with_colon_inside(tmp_path):
-    """Topic containing a colon should not be truncated at the colon."""
-    f = write_input(tmp_path, """\
-Topic: Automation: why it matters in 2025
-Bullets:
-- saves time
-""")
-    result = parse_input_file(f)
-    assert result.topic == "Automation: why it matters in 2025"
+def test_parse_llm_response_empty_topic_raises():
+    raw = json.dumps({"topic": "", "bullets": ["x"], "language": "English"})
+    with pytest.raises(ValueError, match="empty topic"):
+        _parse_llm_response(raw)
 
 
-def test_extra_whitespace_in_topic(tmp_path):
-    """Leading/trailing whitespace in topic should be stripped."""
-    f = write_input(tmp_path, """\
-Topic:    lots of spaces around
-Bullets:
-- point
-""")
-    result = parse_input_file(f)
-    assert result.topic == "lots of spaces around"
+def test_parse_llm_response_missing_bullets_raises():
+    raw = json.dumps({"topic": "Something", "bullets": [], "language": "English"})
+    with pytest.raises(ValueError, match="no bullet points"):
+        _parse_llm_response(raw)
+
+
+def test_parse_llm_response_bullets_not_list_raises():
+    raw = json.dumps({"topic": "Something", "bullets": "not a list", "language": "English"})
+    with pytest.raises(ValueError, match="no bullet points"):
+        _parse_llm_response(raw)

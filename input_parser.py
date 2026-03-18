@@ -1,12 +1,21 @@
 """
 Parser for the article generation input file.
+Uses an LLM to extract structured data from free-form text.
 """
 
+import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
+
+PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 @dataclass
@@ -16,25 +25,21 @@ class ArticleInput:
     language: str = "English"
 
 
-def parse_input_file(file_path: str | Path) -> ArticleInput:
+def parse_input_file(file_path: str | Path, client: "BaseProvider") -> ArticleInput:
     """
-    Parse an input file with the following format:
-
-        Topic: Why small businesses should automate repetitive processes
-        Language: English
-        Bullets:
-        - manual work limits growth
-        - hiring increases costs
+    Parse an input file using an LLM to extract topic, bullets, and language
+    from free-form text.
 
     Args:
         file_path: Path to the input text file.
+        client:    An LLM client instance with a .complete() method.
 
     Returns:
-        ArticleInput dataclass with parsed fields.
+        ArticleInput dataclass with extracted fields.
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If required fields are missing or malformed.
+        FileNotFoundError: If the input file or prompt file does not exist.
+        ValueError: If the LLM response cannot be parsed or required fields are missing.
     """
     path = Path(file_path)
     if not path.exists():
@@ -43,58 +48,63 @@ def parse_input_file(file_path: str | Path) -> ArticleInput:
             "Please check the path and try again."
         )
 
-    logger.info(f"Parsing input file: {path}")
-    text = path.read_text(encoding="utf-8")
+    logger.info(f"Parsing input file via LLM: {path}")
+    raw_text = path.read_text(encoding="utf-8")
 
-    topic = _extract_field(text, "topic")
-    language = _extract_field(text, "language", default="English")
-    bullets = _extract_bullets(text)
+    prompt_path = PROMPTS_DIR / "input_parser_prompt.txt"
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Parser prompt not found: {prompt_path}")
+    system_prompt = prompt_path.read_text(encoding="utf-8")
 
-    if not topic:
-        raise ValueError(
-            "Your input file is missing a topic. "
-            "Please add a line like: Topic: Why automation matters"
-        )
-    if not bullets:
-        raise ValueError(
-            "Your input file has no bullet points. "
-            "Please add at least one line like: - your key point"
-        )
+    llm_response = client.complete(system_prompt=system_prompt, user_prompt=raw_text)
+    article_input = _parse_llm_response(llm_response)
 
-    article_input = ArticleInput(topic=topic, bullets=bullets, language=language)
     logger.info(
-        f"Parsed: topic='{topic}', language='{language}', bullets={len(bullets)}"
+        f"Parsed via LLM: topic='{article_input.topic}', "
+        f"language='{article_input.language}', bullets={len(article_input.bullets)}"
     )
     return article_input
 
 
-def _extract_field(text: str, field: str, default: str | None = None) -> str | None:
-    """Extract a single-line field like 'Topic: ...' from text."""
-    for line in text.splitlines():
-        if line.lower().startswith(f"{field.lower()}:"):
-            value = line.split(":", 1)[1].strip()
-            if value:
-                return value
-    return default
+def _parse_llm_response(response: str) -> ArticleInput:
+    """
+    Parse the JSON response from the LLM into an ArticleInput.
 
+    Defensively strips markdown code fences in case the model adds them.
 
-def _extract_bullets(text: str) -> list[str]:
-    """Extract bullet points (lines starting with '-') from text."""
-    bullets = []
-    in_bullets_section = False
+    Raises:
+        ValueError: If JSON is invalid or required fields are missing/empty.
+    """
+    cleaned = re.sub(r"^```(?:json)?\s*", "", response.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip())
 
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("bullets:"):
-            in_bullets_section = True
-            continue
-        if in_bullets_section:
-            if stripped.startswith("-"):
-                bullet = stripped[1:].strip()
-                if bullet:
-                    bullets.append(bullet)
-            elif stripped and not stripped.startswith("-"):
-                # Stop if we hit a non-bullet, non-empty line
-                break
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"LLM returned invalid JSON. Parse error: {e}\n"
+            f"Raw response was:\n{response}"
+        )
 
-    return bullets
+    topic = data.get("topic", "").strip()
+    language = data.get("language", "English").strip() or "English"
+    bullets = data.get("bullets", [])
+
+    if not topic:
+        raise ValueError(
+            "LLM extraction returned an empty topic. "
+            "Check your input file has a clear article subject."
+        )
+    if not isinstance(bullets, list) or not bullets:
+        raise ValueError(
+            "LLM extraction returned no bullet points. "
+            "Check your input file includes key points to cover."
+        )
+
+    bullets = [str(b).strip() for b in bullets if str(b).strip()]
+    if not bullets:
+        raise ValueError(
+            "LLM extraction returned bullet points that are all empty after stripping."
+        )
+
+    return ArticleInput(topic=topic, bullets=bullets, language=language)

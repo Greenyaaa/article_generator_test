@@ -78,11 +78,11 @@ def main() -> None:
     logger.info(f"Input: {args.input} | Words: {args.words} | Model: {args.model}")
 
     try:
-        # Step 1: Parse input
-        article_input = parse_input_file(args.input)
-
-        # Step 2: Initialize LLM client
+        # Step 1: Initialize LLM client
         client = LLMClient(model=args.model)
+
+        # Step 2: Parse input (uses LLM to extract from free-form text)
+        article_input = parse_input_file(args.input, client)
 
         # Step 3: Run pipeline
         draft_path, final_path = run_pipeline(
